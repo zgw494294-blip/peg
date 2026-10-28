@@ -22,7 +22,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	p := &Peg[uint32]{Tree: tree.New(false, false, false), Buffer: string(buffer)}
+	p := &Peg[uint32]{Tree: tree.New(false, false, false, false), Buffer: string(buffer)}
 	if err := p.Init(Pretty[uint32](true), Size[uint32](1<<15)); err != nil {
 		log.Fatal("Init:", err)
 	}

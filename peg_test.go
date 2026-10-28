@@ -17,14 +17,14 @@ func TestCorrect(t *testing.T) {
 type T Peg {}
 Grammar <- !.
 `
-	p := &Peg[uint32]{Tree: tree.New(false, false, false), Buffer: buffer}
+	p := &Peg[uint32]{Tree: tree.New(false, false, false, false), Buffer: buffer}
 	_ = p.Init()
 	err := p.Parse()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	p = &Peg[uint32]{Tree: tree.New(false, false, false), Buffer: buffer}
+	p = &Peg[uint32]{Tree: tree.New(false, false, false, false), Buffer: buffer}
 	_ = p.Init(Size[uint32](1 << 15))
 	err = p.Parse()
 	if err != nil {
@@ -37,7 +37,7 @@ func TestNoSpacePackage(t *testing.T) {
 type T Peg {}
 Grammar <- !.
 `
-	p := &Peg[uint32]{Tree: tree.New(false, false, false), Buffer: buffer}
+	p := &Peg[uint32]{Tree: tree.New(false, false, false, false), Buffer: buffer}
 	_ = p.Init(Size[uint32](1 << 15))
 	err := p.Parse()
 	if err == nil {
@@ -51,7 +51,7 @@ package p
 typenospace Peg {}
 Grammar <- !.
 `
-	p := &Peg[uint32]{Tree: tree.New(false, false, false), Buffer: buffer}
+	p := &Peg[uint32]{Tree: tree.New(false, false, false, false), Buffer: buffer}
 	_ = p.Init(Size[uint32](1 << 15))
 	err := p.Parse()
 	if err == nil {
@@ -65,7 +65,7 @@ func TestSame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &Peg[uint32]{Tree: tree.New(true, true, false), Buffer: string(buffer)}
+	p := &Peg[uint32]{Tree: tree.New(true, true, false, false), Buffer: string(buffer)}
 	_ = p.Init(Size[uint32](1 << 15))
 	if err = p.Parse(); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ Begin <- Begin 'x'
 	}
 
 	for i, buffer := range tt {
-		p := &Peg[uint32]{Tree: tree.New(false, false, false), Buffer: buffer}
+		p := &Peg[uint32]{Tree: tree.New(false, false, false, false), Buffer: buffer}
 		_ = p.Init(Size[uint32](1 << 15))
 		if err := p.Parse(); err != nil {
 			t.Fatal(err)
@@ -145,7 +145,7 @@ type DiceExprParser Peg {
 
 Expr <- 'CJK' / '汉字' / 'test'
 `
-	p := &Peg[uint32]{Tree: tree.New(false, true, false), Buffer: buffer}
+	p := &Peg[uint32]{Tree: tree.New(false, true, false, false), Buffer: buffer}
 	_ = p.Init(Size[uint32](1 << 15))
 	err := p.Parse()
 	if err != nil {
@@ -270,7 +270,7 @@ type Test Peg {}
 		t.Run(tc.name, func(t *testing.T) {
 			sourceCode := pegHeader + tc.testRule
 
-			p := &Peg[uint32]{Tree: tree.New(false, true, true), Buffer: sourceCode}
+			p := &Peg[uint32]{Tree: tree.New(false, true, true, false), Buffer: sourceCode}
 			_ = p.Init(Size[uint32](1 << 15))
 			if err := p.Parse(); err != nil {
 				t.Fatal(err)
@@ -313,7 +313,7 @@ var pegFileContents = func(files []string) []string {
 func BenchmarkInitOnly(b *testing.B) {
 	for b.Loop() {
 		for _, peg := range pegFileContents {
-			p := &Peg[uint32]{Tree: tree.New(true, true, false), Buffer: peg}
+			p := &Peg[uint32]{Tree: tree.New(true, true, false, false), Buffer: peg}
 			_ = p.Init(Size[uint32](1 << 15))
 		}
 	}
@@ -322,7 +322,7 @@ func BenchmarkInitOnly(b *testing.B) {
 func BenchmarkParse(b *testing.B) {
 	pegs := make([]*Peg[uint32], len(pegFileContents))
 	for i, content := range pegFileContents {
-		p := &Peg[uint32]{Tree: tree.New(true, true, false), Buffer: content}
+		p := &Peg[uint32]{Tree: tree.New(true, true, false, false), Buffer: content}
 		_ = p.Init(Size[uint32](1 << 15))
 		pegs[i] = p
 	}
@@ -342,7 +342,7 @@ func BenchmarkParse(b *testing.B) {
 func BenchmarkParseAndReset(b *testing.B) {
 	pegs := make([]*Peg[uint32], len(pegFileContents))
 	for i, content := range pegFileContents {
-		p := &Peg[uint32]{Tree: tree.New(true, true, false), Buffer: content}
+		p := &Peg[uint32]{Tree: tree.New(true, true, false, false), Buffer: content}
 		_ = p.Init(Size[uint32](1 << 15))
 		pegs[i] = p
 	}
@@ -360,7 +360,7 @@ func BenchmarkParseAndReset(b *testing.B) {
 func BenchmarkInitAndParse(b *testing.B) {
 	for b.Loop() {
 		for _, peg := range pegFileContents {
-			p := &Peg[uint32]{Tree: tree.New(true, true, false), Buffer: peg}
+			p := &Peg[uint32]{Tree: tree.New(true, true, false, false), Buffer: peg}
 			_ = p.Init(Size[uint32](1 << 15))
 			if err := p.Parse(); err != nil {
 				b.Fatal(err)
@@ -372,7 +372,7 @@ func BenchmarkInitAndParse(b *testing.B) {
 func BenchmarkInitParseAndReset(b *testing.B) {
 	for b.Loop() {
 		for _, peg := range pegFileContents {
-			p := &Peg[uint32]{Tree: tree.New(true, true, false), Buffer: peg}
+			p := &Peg[uint32]{Tree: tree.New(true, true, false, false), Buffer: peg}
 			_ = p.Init(Size[uint32](1 << 15))
 			if err := p.Parse(); err != nil {
 				b.Fatal(err)
@@ -392,7 +392,7 @@ OtherAttr <- [[A-Z_ 0-9]]+ _ ':' [^\n]*
 
 _ <- [ \t]*
 `
-	p := &Peg[uint32]{Tree: tree.New(false, true, false), Buffer: grammar}
+	p := &Peg[uint32]{Tree: tree.New(false, true, false, false), Buffer: grammar}
 	_ = p.Init(Size[uint32](1 << 15))
 	if err := p.Parse(); err != nil {
 		t.Fatal(err)
@@ -423,7 +423,7 @@ type Parser Peg {
 
 Rule <- ' ' / '\t' / [a-z]
 `
-	pChar := &Peg[uint32]{Tree: tree.New(false, true, false), Buffer: charGrammar}
+	pChar := &Peg[uint32]{Tree: tree.New(false, true, false, false), Buffer: charGrammar}
 	_ = pChar.Init(Size[uint32](1 << 15))
 	if err := pChar.Parse(); err != nil {
 		t.Fatal(err)

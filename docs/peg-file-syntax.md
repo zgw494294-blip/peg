@@ -147,3 +147,62 @@ capture <- <'capture'> { fmt.Println(text) }
 ```
 
 Will print out `"capture"`. The captured string is stored in `buffer[begin:end]`.
+
+## Left recursion
+
+By default a rule that calls itself at the same input position (for example
+`Expr <- Expr '-' Term / Term`) is reported as a possible infinite left
+recursion, because a plain recursive-descent parser would enter it forever.
+
+Generate with the `-leftrecursion` flag to support such rules directly:
+
+```
+go tool peg -leftrecursion grammar.peg
+```
+
+The existing `.peg` syntax is unchanged; the flag only changes the generated
+parser. Both direct and mutual left recursion are supported:
+
+```
+Expr <- Expr '-' Term / Term
+Term <- < [0-9]+ >
+```
+
+```
+Expr <- Stmt / Num
+Stmt <- Expr '-' Num
+```
+
+Continuous call and member suffixes can be written the same way:
+
+```
+Post <- Post '(' ')' / Post '.' Name / Name
+```
+
+The parser first looks for a base derivation (the seed), then re-evaluates the
+rule while the candidate keeps consuming more input. Candidates ending at the
+same position keep the declared alternative order. A recursive cycle without
+a successful base fails with an ordinary parse error instead of looping
+forever, for example `Loop <- Loop`.
+
+The generated syntax tree keeps the original named rule nesting, so `8-3-1`
+is reported as `Expr(8-3-1)` containing `Expr(8-3)` containing `Expr(8)`,
+not as a flattened repetition. Captures and deferred Go actions belong to the
+single winning derivation only: losing alternatives, attempts that did not
+grow, and shorter results leave no extra tokens or actions. As always,
+`Parse` itself does not run Go actions; one subsequent `Execute` runs the
+action stream of the winning derivation in order.
+
+Notes and limitations:
+
+* Left recursion mode requires the AST, so it cannot be combined with
+  `-noast`; the combination is reported as an error. The `DisableMemoize`
+  parser option is also rejected by `Parse`.
+* Semantic predicates that depend on the result of a recursive call are not
+  specially tracked. Predicates outside the recursion, such as the usual
+  trailing `!.`, work normally.
+* `-inline` and `-switch` remain usable: inlining is conservatively disabled
+  for the recursive rules themselves, so the public parse result, syntax tree
+  and action stream are unchanged.
+* Grammars without left recursive rules generate exactly the same code with
+  or without the flag, and the flag is off by default.

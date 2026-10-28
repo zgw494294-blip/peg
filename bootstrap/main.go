@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	t := tree.New(true, true, false)
+	t := tree.New(true, true, false, false)
 
 	/*package main
 

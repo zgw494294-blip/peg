@@ -1,0 +1,25 @@
+# Copyright 2010 The Go Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+//go:generate go tool peg -strict -leftrecursion mutual.peg
+
+package mutualleft
+
+type Mutual Peg {
+}
+
+# Expr and Stmt reach each other at the same input position, so they form a
+# mutual left recursion cycle; Loop has no successful base, so it must fail
+# normally instead of looping forever.
+Start <- _ Root _ !.
+
+Root <- (Loop Expr) / Expr
+
+Expr <- Stmt
+      / Num
+Stmt <- Expr _ '-' _ Num
+Loop <- Loop
+
+Num <- < [0-9]+ > _
+_ <- [ \t]*

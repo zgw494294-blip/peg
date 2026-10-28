@@ -1,0 +1,18 @@
+package main
+
+type Cli Peg {
+	Events []string
+}
+
+Start <- Root !.
+
+# The first alternative parses a full Expr (memoizing it and appending the
+# "ghost" action) and then fails on '#'. The winning fallback reuses the
+# memoized Expr. The ghost action must not survive, and reused results must
+# neither duplicate nor lose actions.
+Root <- Expr { p.Events = append(p.Events, "ghost") } '#'
+      / Expr
+
+Expr <- Expr '-' Num { p.Events = append(p.Events, "sub") }
+      / Num
+Num <- < [0-9]+ > { p.Events = append(p.Events, "num:"+text) }

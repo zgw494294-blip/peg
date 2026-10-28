@@ -37,6 +37,19 @@ This creates the file `peg.peg.go`
 go tool peg -inline -switch peg.peg
 ```
 
+### Left recursive grammars
+
+Pass `-leftrecursion` to write natural left-associative rules such as
+`Expr <- Expr '-' Term / Term`, including mutual recursion and continuous
+call/member suffixes, without rewriting them as repetitions. The flag is off
+by default, keeps the existing `.peg` syntax, requires the AST (it cannot be
+combined with `-noast`), and preserves the named rule nesting, captures and
+deferred actions of the winning derivation. See
+[peg-file-syntax.md](docs/peg-file-syntax.md#left-recursion) for details.
+```
+go tool peg -leftrecursion mygrammar.peg
+```
+
 ### Help
 ```
 go tool peg -h

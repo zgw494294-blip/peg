@@ -1,0 +1,35 @@
+# Copyright 2010 The Go Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+//go:generate go tool peg -strict -switch -inline -leftrecursion leftrec.peg
+
+package leftrecursion
+
+type LR Peg {
+	// Events records the deferred Go actions; it is owned and inspected by
+	// the tests and is never touched by the parser outside of Execute.
+	Events []string
+}
+
+Start <- _ Expr _ !.
+
+Expr <- Expr _ '+' _ Term { p.Events = append(p.Events, "add") }
+      / Expr _ '-' _ Term { p.Events = append(p.Events, "sub") }
+      / Term
+
+Term <- Term _ '*' _ Factor { p.Events = append(p.Events, "mul") }
+      / Term _ '/' _ Factor { p.Events = append(p.Events, "div") }
+      / Factor
+
+Factor <- Post
+Post <- Post _ '(' _ ')' { p.Events = append(p.Events, "call") }
+      / Post _ '.' Name { p.Events = append(p.Events, "member:"+text) }
+      / Atom
+Atom <- Number
+      / Name
+      / '(' _ Expr _ ')'
+Number <- < [0-9]+ > _ { p.Events = append(p.Events, "num:"+text) }
+Name <- < [a-z一-鿿]+ > _
+
+_ <- [ \t]*

@@ -314,9 +314,9 @@ type Tree struct {
 	Rules      map[string]*node
 	rulesCount map[string]uint
 	node
-	inline, _switch, Ast bool
-	Strict               bool
-	werr                 error
+	inline, _switch, Ast, LeftRecursion bool
+	Strict                              bool
+	werr                                error
 
 	Generator       string
 	RuleNames       []*node
@@ -336,15 +336,25 @@ type Tree struct {
 	HasCharacter    bool
 	HasString       bool
 	HasRange        bool
+
+	// leftRecursive holds the named rules that can reach themselves through
+	// a chain of rule calls without consuming input. It is only populated
+	// when LeftRecursion is enabled.
+	leftRecursive map[string]bool
+	// HasLeftRecursion is true when at least one rule is generated with the
+	// seed/grow left-recursion machinery.
+	HasLeftRecursion bool
 }
 
-func New(inline, _switch, noast bool) *Tree {
+func New(inline, _switch, noast, leftRecursion bool) *Tree {
 	return &Tree{
-		Rules:      make(map[string]*node),
-		rulesCount: make(map[string]uint),
-		inline:     inline,
-		_switch:    _switch,
-		Ast:        !noast,
+		Rules:         make(map[string]*node),
+		rulesCount:    make(map[string]uint),
+		inline:        inline,
+		_switch:       _switch,
+		Ast:           !noast,
+		LeftRecursion: leftRecursion,
+		leftRecursive: make(map[string]bool),
 	}
 }
 
@@ -520,7 +530,11 @@ func (t *Tree) checkRecursion(n *node, ruleReached []bool) bool {
 	case TypeRule:
 		id := n.GetID()
 		if ruleReached[id] {
-			t.warn(fmt.Errorf("possible infinite left recursion in rule '%v'", n))
+			// In left recursion mode the seed/grow generated code handles
+			// these cycles; the warning stays in effect for the default mode.
+			if !(t.LeftRecursion && t.leftRecursive[n.String()]) {
+				t.warn(fmt.Errorf("possible infinite left recursion in rule '%v'", n))
+			}
 			return false
 		}
 		ruleReached[id] = true
@@ -548,6 +562,143 @@ func (t *Tree) checkRecursion(n *node, ruleReached []bool) bool {
 		return true
 	}
 	return false
+}
+
+// leftProperties reports two properties of an expression for left recursion
+// analysis:
+//   - nullable is true when the expression can succeed without consuming any
+//     runes. Semantic predicates and state changes are optimistically treated
+//     as nullable zero-width elements.
+//   - left holds the names of the rules that may be invoked while still at the
+//     expression's starting input position.
+//
+// ruleNullable and ruleLeft are the fixed-point approximations of the same
+// properties per named rule.
+func (t *Tree) leftProperties(n *node, ruleNullable map[string]bool,
+	ruleLeft map[string]map[string]struct{}) (nullable bool, left map[string]struct{}) {
+	left = map[string]struct{}{}
+	switch n.GetType() {
+	case TypeName:
+		// Keep the type name as written; undefined rules have no body and
+		// therefore no outgoing edges.
+		left[n.String()] = struct{}{}
+		return ruleNullable[n.String()], left
+	case TypeRule, TypePush, TypeImplicitPush, TypePlus:
+		// TypePush/TypeImplicitPush carry their real expression in the front
+		// child; their trailing rule-copy node is code generation metadata,
+		// not an actual rule call.
+		return t.leftProperties(n.Front(), ruleNullable, ruleLeft)
+	case TypeAlternate, TypeUnorderedAlternate:
+		for element := range n.Iterator() {
+			elementNullable, elementLeft := t.leftProperties(element, ruleNullable, ruleLeft)
+			if elementNullable {
+				nullable = true
+			}
+			for name := range elementLeft {
+				left[name] = struct{}{}
+			}
+		}
+		return nullable, left
+	case TypeSequence:
+		nullable = true
+		for element := range n.Iterator() {
+			elementNullable, elementLeft := t.leftProperties(element, ruleNullable, ruleLeft)
+			if nullable {
+				for name := range elementLeft {
+					left[name] = struct{}{}
+				}
+			}
+			if !elementNullable {
+				nullable = false
+			}
+		}
+		return nullable, left
+	case TypeQuery, TypeStar, TypePeekFor, TypePeekNot:
+		// Optional and repeated expressions can be entered at the start
+		// position; predicates evaluate their child without consuming.
+		_, left = t.leftProperties(n.Front(), ruleNullable, ruleLeft)
+		return true, left
+	case TypePredicate, TypeStateChange, TypeCommit, TypeNil, TypeAction:
+		return true, left
+	case TypeCharacter:
+		return len(n.String()) == 0, left
+	case TypeString:
+		return len([]rune(n.String())) == 0, left
+	default:
+		// TypeDot, TypeRange and any unexpected node consume input or cannot
+		// be part of a zero-width call chain.
+		return false, left
+	}
+}
+
+// analyzeLeftRecursion finds the named rules that can reach themselves with a
+// chain of zero-width rule calls. Those are the rules that need the seed/grow
+// treatment; every member of a mutual left-recursion cycle is included.
+func (t *Tree) analyzeLeftRecursion() map[string]bool {
+	ruleNullable := make(map[string]bool)
+	ruleLeft := make(map[string]map[string]struct{})
+
+	// Nullability and left corners form a least fixed point: both can only
+	// gain entries while iterating.
+	for changed := true; changed; {
+		changed = false
+		for _, rule := range t.RuleNames {
+			name := rule.String()
+			nullable, left := t.leftProperties(rule.Front(), ruleNullable, ruleLeft)
+			if nullable != ruleNullable[name] {
+				ruleNullable[name] = nullable
+				changed = true
+			}
+			previous := ruleLeft[name]
+			for edge := range left {
+				if _, ok := previous[edge]; !ok {
+					if previous == nil {
+						previous = map[string]struct{}{}
+					}
+					previous[edge] = struct{}{}
+					ruleLeft[name] = previous
+					changed = true
+				}
+			}
+		}
+	}
+
+	// A rule is left recursive when it can reach itself following the
+	// zero-width call edges.
+	leftRecursive := make(map[string]bool)
+	for _, rule := range t.RuleNames {
+		start := rule.String()
+		var visit func(name string) bool
+		visited := map[string]bool{}
+		visit = func(name string) bool {
+			for edge := range ruleLeft[name] {
+				if edge == start {
+					return true
+				}
+				if !visited[edge] {
+					visited[edge] = true
+					if visit(edge) {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		if visit(start) {
+			leftRecursive[start] = true
+		}
+	}
+	return leftRecursive
+}
+
+// LeftRecursiveRules returns the names of the rules generated with the
+// seed/grow left-recursion machinery.
+func (t *Tree) LeftRecursiveRules() map[string]bool {
+	result := make(map[string]bool, len(t.leftRecursive))
+	for name, value := range t.leftRecursive {
+		result[name] = value
+	}
+	return result
 }
 
 func (t *Tree) warn(e error) {
@@ -627,6 +778,10 @@ func (t *Tree) link(countsForRule *[TypeLast]uint, n *node, counts *[TypeLast]ui
 }
 
 func (t *Tree) Compile(file string, args []string, out io.Writer) (err error) {
+	if t.LeftRecursion && !t.Ast {
+		return fmt.Errorf("left recursion mode requires the AST and cannot be combined with -noast")
+	}
+
 	t.AddImport("fmt")
 	if t.Ast {
 		t.AddImport("io")
@@ -683,6 +838,15 @@ func (t *Tree) Compile(file string, args []string, out io.Writer) (err error) {
 			countsForRule := [TypeLast]uint{}
 			countsByRule[n.GetID()] = &countsForRule
 			t.link(&countsForRule, n, &counts, &countsByRule, n)
+		}
+	}
+
+	if t.LeftRecursion {
+		t.leftRecursive = t.analyzeLeftRecursion()
+		t.HasLeftRecursion = len(t.leftRecursive) > 0
+		if t.HasLeftRecursion {
+			t.Imports = append(t.Imports, "errors")
+			slices.Sort(t.Imports)
 		}
 	}
 
@@ -1031,7 +1195,9 @@ func (t *Tree) Compile(file string, args []string, out io.Writer) (err error) {
 		case TypeName:
 			name := n.String()
 			rule := t.Rules[name]
-			if t.inline && t.rulesCount[name] == 1 {
+			// Left recursive rules must stay real rule closures so the
+			// seed/grow memo machinery can intercept their recursive calls.
+			if t.inline && t.rulesCount[name] == 1 && !t.leftRecursive[name] {
 				element := rule.Front()
 				element.SetParentDetect(n.ParentDetect())
 				element.SetParentMultipleKey(n.ParentMultipleKey())
@@ -1263,7 +1429,7 @@ func (t *Tree) Compile(file string, args []string, out io.Writer) (err error) {
 		label++
 		if count, ok := t.rulesCount[element.String()]; !ok {
 			continue
-		} else if t.inline && count == 1 && ko != 0 {
+		} else if t.inline && count == 1 && ko != 0 && !t.leftRecursive[element.String()] {
 			continue
 		}
 		compile(expression, ko)
@@ -1312,11 +1478,30 @@ func (t *Tree) Compile(file string, args []string, out io.Writer) (err error) {
 			t.warn(fmt.Errorf("rule '%v' defined but not used", element))
 			_print("\n  nil,")
 			continue
-		} else if t.inline && count == 1 && ko != 0 {
+		} else if t.inline && count == 1 && ko != 0 && !t.leftRecursive[element.String()] {
 			_print("\n  nil,")
 			continue
 		}
+		isLeftRecursive := t.LeftRecursion && t.leftRecursive[element.String()]
 		_print("\n  func() bool {")
+		if isLeftRecursive {
+			/*
+				Left recursive rules run under the seed/grow driver: the body
+				is an ordinary closure that is re-evaluated until it stops
+				consuming more input. Its failure label just reports failure;
+				all memo state is managed by lrApply.
+			*/
+			_print("\n   return lrApply(%d, func() bool {", element.GetID())
+			compile(expression, ko)
+			_print("\n    return true")
+			if labels[ko] {
+				printLabel(ko)
+				_print("\n    return false")
+			}
+			_print("\n   })")
+			_print("\n  },")
+			continue
+		}
 		if t.Ast {
 			printMemoCheck(element.GetID())
 		}

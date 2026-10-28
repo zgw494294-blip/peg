@@ -20,14 +20,15 @@ import (
 var (
 	Version = "dev"
 
-	inline      = flag.Bool("inline", false, "parse rule inlining")
-	switchFlag  = flag.Bool("switch", false, "replace if-else if-else like blocks with switch blocks")
-	printFlag   = flag.Bool("print", false, "directly dump the syntax tree")
-	syntax      = flag.Bool("syntax", false, "print out the syntax tree")
-	noast       = flag.Bool("noast", false, "disable AST")
-	strict      = flag.Bool("strict", false, "treat compiler warnings as errors")
-	outputFile  = flag.String("output", "", "output to `FILE` (\"-\" for stdout)")
-	showVersion = flag.Bool("version", false, "print the version and exit")
+	inline        = flag.Bool("inline", false, "parse rule inlining")
+	switchFlag    = flag.Bool("switch", false, "replace if-else if-else like blocks with switch blocks")
+	printFlag     = flag.Bool("print", false, "directly dump the syntax tree")
+	syntax        = flag.Bool("syntax", false, "print out the syntax tree")
+	noast         = flag.Bool("noast", false, "disable AST")
+	leftRecursion = flag.Bool("leftrecursion", false, "enable direct and mutual left recursion support (requires the AST)")
+	strict        = flag.Bool("strict", false, "treat compiler warnings as errors")
+	outputFile    = flag.String("output", "", "output to `FILE` (\"-\" for stdout)")
+	showVersion   = flag.Bool("version", false, "print the version and exit")
 )
 
 // main is the entry point for the PEG compiler.
@@ -114,7 +115,7 @@ func parse(compile func(*Peg[uint32], io.Writer) error) error {
 		return err
 	}
 
-	p := &Peg[uint32]{Tree: tree.New(*inline, *switchFlag, *noast), Buffer: string(buffer)}
+	p := &Peg[uint32]{Tree: tree.New(*inline, *switchFlag, *noast, *leftRecursion), Buffer: string(buffer)}
 	_ = p.Init(Pretty[uint32](true), Size[uint32](1<<15))
 	if err = p.Parse(); err != nil {
 		return err

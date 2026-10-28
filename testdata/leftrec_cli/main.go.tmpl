@@ -1,0 +1,64 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+func main() {
+	p := &Cli[uint32]{Buffer: "8-3-1"}
+	if err := p.Init(); err != nil {
+		panic(err)
+	}
+	if err := p.Parse(); err != nil {
+		panic(err)
+	}
+
+	// Parse itself runs no Go action.
+	fmt.Printf("events_after_parse=%d\n", len(p.Events))
+
+	p.Execute()
+	fmt.Printf("events=%s\n", strings.Join(p.Events, ","))
+
+	var tree []string
+	for _, line := range strings.Split(p.SprintSyntaxTree(), "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		depth := len(line) - len(trimmed)
+		rule, text, _ := strings.Cut(trimmed, " ")
+		text = strings.Trim(text, `"`)
+		if rule != "" {
+			tree = append(tree, fmt.Sprintf("%d:%s:%s", depth, rule, text))
+		}
+	}
+	fmt.Printf("tree=%s\n", strings.Join(tree, ","))
+
+	// Reset and reuse the parser instance with a different buffer.
+	p.Buffer = "2-1"
+	p.Events = nil
+	p.Reset()
+	if err := p.Parse(); err != nil {
+		panic(err)
+	}
+	p.Execute()
+	fmt.Printf("events_reset=%s\n", strings.Join(p.Events, ","))
+
+	// A failed parse followed by a successful one on another instance.
+	bad := &Cli[uint32]{Buffer: "1-"}
+	if err := bad.Init(); err != nil {
+		panic(err)
+	}
+	if err := bad.Parse(); err == nil {
+		fmt.Println("bad_parse=unexpected-success")
+	} else {
+		fmt.Println("bad_parse=failed")
+	}
+	good := &Cli[uint32]{Buffer: "9"}
+	if err := good.Init(); err != nil {
+		panic(err)
+	}
+	if err := good.Parse(); err != nil {
+		panic(err)
+	}
+	good.Execute()
+	fmt.Printf("good_events=%s\n", strings.Join(good.Events, ","))
+}

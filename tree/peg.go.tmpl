@@ -297,12 +297,36 @@ func DisableMemoize[U Uint]() func(*{{.StructName}}[U]) error {
 type memo[U Uint] struct {
 	Matched       bool
 	Partial       []token[U]
+	{{if .HasLeftRecursion -}}
+	// lr is non-nil while a left recursive rule is being grown. The entry
+	// then acts as the recursion marker instead of a finalized result.
+	lr            *lrState[U]
+	{{end -}}
 }
 
 type memoKey[U Uint] struct {
 	Rule     U
 	Position U
 }
+
+{{if .HasLeftRecursion}}
+// lrState is the active seed/grow state of one left recursive rule at one
+// input position.
+type lrState[U Uint] struct {
+	// sp is the input position the rule was entered at.
+	sp U
+	// hasSeed reports whether a base derivation has been found.
+	hasSeed bool
+	// end is the rune position reached by the current best derivation.
+	end U
+	// partial holds the winning tokens (tokenIndex relative slice clone).
+	partial []token[U]
+	// touched holds every memo entry created at sp while this head was
+	// being evaluated. Those entries may depend on the current seed, so they
+	// are retried whenever the seed grows.
+	touched map[memoKey[U]]struct{}
+}
+{{end}}
 {{end -}}
 
 func (p *{{.StructName}}[U]) Init(options ...func(*{{.StructName}}[U]) error) error {
@@ -312,6 +336,9 @@ func (p *{{.StructName}}[U]) Init(options ...func(*{{.StructName}}[U]) error) er
 		buffer               []rune
 {{if .Ast -}}
 		memoization          map[memoKey[U]]memo[U]
+{{end -}}
+{{if .HasLeftRecursion -}}
+		lrStack              []*lrState[U]
 {{end -}}
 {{if not .Ast -}}
 {{if .HasPush -}}
@@ -345,6 +372,13 @@ func (p *{{.StructName}}[U]) Init(options ...func(*{{.StructName}}[U]) error) er
 	tree := p.tokens
 {{end -}}
 	p.parse = func(rule ...int) error {
+{{if .HasLeftRecursion -}}
+		// Left recursion markers live in the memoization table, so the
+		// combination with DisableMemoize is not supported.
+		if p.disableMemoize {
+			return errors.New("left recursion mode does not support DisableMemoize")
+		}
+{{end -}}
 		r := 1
 		if len(rule) > 0 {
 			r = rule[0]
@@ -372,6 +406,18 @@ func (p *{{.StructName}}[U]) Init(options ...func(*{{.StructName}}[U]) error) er
 		}
 	}
 
+{{if .HasLeftRecursion}}
+	// lrTouch records a freshly created memo entry on every active grow head
+	// at the same position.
+	lrTouch := func(key memoKey[U]) {
+		for _, head := range lrStack {
+			if head.sp == key.Position {
+				head.touched[key] = struct{}{}
+			}
+		}
+	}
+{{end}}
+
 {{if .Ast -}}
 	memoize := func(rule U, begin U, tokenIndexStart U, matched bool) {
 		if p.disableMemoize {
@@ -386,6 +432,9 @@ func (p *{{.StructName}}[U]) Init(options ...func(*{{.StructName}}[U]) error) er
 				Partial: slices.Clone(tree.tree[tokenIndexStart:tokenIndex]),
 			}
 		}
+{{if .HasLeftRecursion -}}
+		lrTouch(key)
+{{end -}}
 	}
 
 	memoizedResult := func(m memo[U]) bool {
@@ -401,6 +450,94 @@ func (p *{{.StructName}}[U]) Init(options ...func(*{{.StructName}}[U]) error) er
 		return true
 	}
 {{end -}}
+
+{{if .HasLeftRecursion}}
+	// lrReplay replays the seed of a recursion marker, or a finalized memo.
+	lrReplay := func(m memo[U]) bool {
+		if m.lr == nil {
+			return memoizedResult(m)
+		}
+		if !m.lr.hasSeed {
+			return false
+		}
+		tree.tree = append(tree.tree[:tokenIndex], m.lr.partial...)
+		tokenIndex += U(len(m.lr.partial))
+		position = m.lr.end
+		if tree.tree[tokenIndex-1].begin != position && position > maxToken.end {
+			maxToken = tree.tree[tokenIndex-1]
+		}
+		return true
+	}
+
+	// lrApply evaluates one left recursive rule at the current position using
+	// the seed/grow algorithm: a first evaluation establishes the base
+	// derivation, then the body is re-evaluated while it keeps consuming more
+	// input. Only the longest winning derivation is kept; alternatives ending
+	// at the same position keep their declared order.
+	lrApply := func(rule pegRule, body func() bool) bool {
+		key := memoKey[U]{U(rule), position}
+		if m, ok := memoization[key]; ok {
+			// A finalized memo, or the in-progress marker re-entered by a
+			// recursive call (which replays the current seed, or fails).
+			return lrReplay(m)
+		}
+
+		sp, st := position, tokenIndex
+		head := &lrState[U]{sp: sp, touched: map[memoKey[U]]struct{}{}}
+		memoization[key] = memo[U]{lr: head}
+		lrTouch(key)
+
+		eval := func() (matched bool) {
+			lrStack = append(lrStack, head)
+			matched = body()
+			lrStack = lrStack[:len(lrStack)-1]
+			return matched
+		}
+
+		if !eval() {
+			// No base derivation: the recursion fails like an ordinary
+			// failed rule instead of looping forever.
+			memoization[key] = memo[U]{Matched: false}
+			lrTouch(key)
+			position, tokenIndex = sp, st
+			return false
+		}
+
+		head.hasSeed = true
+		head.end = position
+		head.partial = slices.Clone(tree.tree[st:tokenIndex])
+
+		for {
+			// Discard memo entries derived from the previous (shorter) seed.
+			for touched := range head.touched {
+				if touched != key {
+					delete(memoization, touched)
+				}
+			}
+			position, tokenIndex = sp, st
+			if !eval() {
+				break
+			}
+			if position <= head.end {
+				// No further consumption: the previous seed wins.
+				break
+			}
+			head.end = position
+			head.partial = slices.Clone(tree.tree[st:tokenIndex])
+		}
+
+		// Commit the best derivation, dropping tokens from losing attempts.
+		tree.tree = append(tree.tree[:st], head.partial...)
+		tokenIndex = st + U(len(head.partial))
+		position = head.end
+		if tokenIndex > st && tree.tree[tokenIndex-1].begin != position && position > maxToken.end {
+			maxToken = tree.tree[tokenIndex-1]
+		}
+		memoization[key] = memo[U]{Matched: true, Partial: slices.Clone(head.partial)}
+		lrTouch(key)
+		return true
+	}
+{{end}}
 
 	{{if .HasDot}}
 	matchDot := func() bool {
